@@ -3,9 +3,6 @@ import plotly.express as px
 import streamlit as st
 import plotly.graph_objects as go
 
-for name in ["df_order_data", "df_order_line", "df_payment_data"]:
-    pd.read_csv(f"data/{name}.csv").to_parquet(f"data/{name}.parquet", index=False)
-
 from datetime import timedelta
 
 def short(val, prefix=""):
