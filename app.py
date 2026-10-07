@@ -52,15 +52,16 @@ st.set_page_config(
 @st.cache_data
 def load_and_prep_data():
     df_order_data = pd.read_parquet("data/df_order_data.parquet")
-    df_order_line = pd.read_parquet("data/df_order_line.parquet")
+    df_order_line = pd.read_parquet("data/df_product_daily.parquet")
 
     # Clean headers
     df_order_data.columns = df_order_data.columns.str.strip().str.lower()
     df_order_line.columns = df_order_line.columns.str.strip().str.lower()
 
-    # Parse datetimes
+    # Parse dates
     df_order_data["date_opened"] = pd.to_datetime(df_order_data["date_opened"])
     df_order_data["date_closed"] = pd.to_datetime(df_order_data["date_closed"])
+    df_order_line["order_date"] = pd.to_datetime(df_order_line["order_date"]).dt.date
 
     return df_order_data, df_order_line
 
@@ -94,7 +95,8 @@ else:
     filtered_order_data = df_order_data.copy()
 
 filtered_order_line = df_order_line[
-    df_order_line["id_order"].isin(filtered_order_data["id_order"])
+    (df_order_line["order_date"] >= filtered_order_data["date_opened"].dt.date.min())
+    & (df_order_line["order_date"] <= filtered_order_data["date_opened"].dt.date.max())
 ]
 
 # -------------------------------------------------------------------------
@@ -237,7 +239,7 @@ df_products = df_products[
 ]
 
 performers = (
-    df_products.groupby("dim_name_translated")
+    df_products.groupby("dim_name_translated", observed=True)
     .agg(
         quantity_sold=("m_quantity", "sum"),
         total_revenue=("m_total_price_inc_vat", "sum"),
@@ -335,7 +337,7 @@ def calculate_payment_split(df_payment_data: pd.DataFrame):
 
     # Group by payment method
     payment_split = (
-        df_pay.groupby("dim_type")
+        df_pay.groupby("dim_type", observed=True)
         .agg(
             total_amount=("m_amount", "sum"),
             transaction_count=("id_pay", "count"),
