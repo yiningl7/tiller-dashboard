@@ -8,7 +8,7 @@ import streamlit as st
 import analysis as an
 from analysis import fmt, fmt_pct
 from data import (DEFAULT_EXCLUDED_ITEMS, REQUIRED_COLS, REVENUE_COLS, SINGLE_STORE_ID,
-                  load_bundled, missing_columns, prepare)
+                  data_version, load_bundled, missing_columns, prepare)
 
 st.set_page_config(page_title="Restaurant Insights", page_icon="🍽️", layout="wide")
 
@@ -77,8 +77,10 @@ def download(df, name, label="Download data (CSV)"):
 # -------------------------------------------------------------------------
 # Data
 # -------------------------------------------------------------------------
-@st.cache_resource(show_spinner="Loading data…")
-def bundled_data():
+@st.cache_resource(show_spinner="Loading data…", max_entries=1)
+def bundled_data(version):
+    """Loaded once and shared; reloaded automatically when the data files change
+    (`version`), and only the latest copy is kept in memory."""
     return load_bundled()
 
 
@@ -129,7 +131,7 @@ def upload_panel():
 
 data, source_label = upload_panel()
 if data is None:
-    data = bundled_data()
+    data = bundled_data(data_version())
 
 orders_all = data["orders"]
 products_all = data["products"]

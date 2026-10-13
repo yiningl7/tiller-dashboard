@@ -173,6 +173,13 @@ def prepare(orders, lines=None, payments=None, stores=None) -> dict:
     }
 
 
+def data_version() -> tuple:
+    """Name, size and modified time of each data file. Changes whenever a file is
+    replaced, so the app knows to reload instead of reusing data held in memory."""
+    return tuple(sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns)
+                        for f in DATA_DIR.glob("*.parquet")))
+
+
 def load_bundled() -> dict:
     def read(name):
         path = DATA_DIR / f"{name}.parquet"
