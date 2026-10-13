@@ -1,0 +1,11 @@
+[theme]
+base = "light"
+primaryColor = "#c2410c"
+backgroundColor = "#fcfbf9"
+secondaryBackgroundColor = "#f3efe9"
+textColor = "#1f1c19"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+headingFont = "'DM Serif Display':https://fonts.googleapis.com/css2?family=DM+Serif+Display&display=swap"
+
+[server]
+maxUploadSize = 200
