@@ -26,7 +26,7 @@ d = prepare(read("df_order_data", ORDER_COLS), read("df_order_line", LINE_COLS),
 orders = d["orders"][[c for c in ORDER_COLS if c in d["orders"].columns]]
 orders.to_parquet(DATA_DIR / "df_order_data.parquet", index=False, compression="zstd")
 for key, name in [("products", "df_product_daily"), ("payments", "df_payment_data"),
-                  ("stores", "df_store_data")]:
+            ("stores", "df_store_data")]:
     if d[key] is not None:
         d[key].to_parquet(DATA_DIR / f"{name}.parquet", index=False, compression="zstd")
 print("done")
