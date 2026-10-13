@@ -1,5 +1,7 @@
 """Every number shown on the dashboard. Pure pandas, no Streamlit, so it can be tested."""
 
+from __future__ import annotations
+
 from datetime import date, timedelta
 
 import pandas as pd

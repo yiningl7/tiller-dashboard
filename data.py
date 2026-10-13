@@ -33,6 +33,10 @@ DEFAULT_EXCLUDED_ITEMS = ["DEPOSIT", "CONSIGNE", "ORDER", "DELIVERY PACKAGE"]
 # counts towards Friday night's service.
 DAY_START_HOUR = 5
 
+# Timestamps stored with a timezone (Tiller's are UTC) are shown in the restaurant's
+# local time, so 12:30 means 12:30 in the restaurant.
+LOCAL_TZ = "Europe/Paris"
+
 SINGLE_STORE_ID = "My restaurant"
 
 CURRENCY_SYMBOLS = {"EUR": "€", "GBP": "£", "USD": "$", "AUD": "A$", "CAD": "C$",
@@ -53,14 +57,23 @@ def missing_columns(df: pd.DataFrame, kind: str) -> list[str]:
     return missing
 
 
+def to_local(values) -> pd.Series:
+    """Parse timestamps; timezone-aware ones are converted to local time and made plain,
+    so they can be compared with the dates picked in the sidebar."""
+    ts = pd.to_datetime(values)
+    if getattr(ts.dt, "tz", None) is not None:
+        ts = ts.dt.tz_convert(LOCAL_TZ).dt.tz_localize(None)
+    return ts
+
+
 def trading_date(ts: pd.Series) -> pd.Series:
     return (ts - pd.Timedelta(hours=DAY_START_HOUR)).dt.normalize()
 
 
 def clean_orders(orders: pd.DataFrame) -> pd.DataFrame:
     o = _lower_cols(orders)
-    o["date_opened"] = pd.to_datetime(o["date_opened"])
-    o["date_closed"] = pd.to_datetime(o["date_closed"]) if "date_closed" in o else pd.NaT
+    o["date_opened"] = to_local(o["date_opened"])
+    o["date_closed"] = to_local(o["date_closed"]) if "date_closed" in o else pd.NaT
     o = o[o["date_opened"].notna()]
 
     if "id_store" not in o:
@@ -94,7 +107,7 @@ def daily_products(lines: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
         p = p.merge(orders[["id_order", "id_store", "date"]], on="id_order", how="inner")
         p = p.rename(columns={"date": "order_date"})
 
-    p["order_date"] = pd.to_datetime(p["order_date"]).dt.normalize()
+    p["order_date"] = to_local(p["order_date"]).dt.normalize()
     keys = ["order_date", "dim_type", "dim_name_translated", "dim_category_translated"]
     if "id_store" in p:
         p["id_store"] = p["id_store"].astype(str)
@@ -124,7 +137,7 @@ def clean_payments(payments: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame
         pay = pay.merge(orders[["id_order", "id_store", "date"]], on="id_order", how="inner")
     pay["id_store"] = pay["id_store"].astype(str).astype("category")
     pay["dim_type"] = pay["dim_type"].astype(str).astype("category")
-    pay["date"] = pd.to_datetime(pay["date"])
+    pay["date"] = to_local(pay["date"])
     keep = [c for c in ["id_pay", "id_order", "id_store", "date", "dim_type", "m_amount"]
             if c in pay]
     return pay[keep].reset_index(drop=True)
