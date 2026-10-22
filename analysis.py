@@ -1,11 +1,6 @@
-"""Every number shown on the dashboard. Pure pandas, no Streamlit, so it can be tested."""
-
 from __future__ import annotations
-
 from datetime import date, timedelta
-
 import pandas as pd
-
 from data import DAY_START_HOUR
 
 WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -14,8 +9,7 @@ SERVICES = ["Lunch", "Dinner", "Other times"]
 
 
 # -------------------------------------------------------------------------
-# Number formatting: one helper, one decimal place, used everywhere
-# -------------------------------------------------------------------------
+# Number formatting
 def fmt(val, prefix: str = "", whole: bool = False) -> str:
     """41171 -> 41.2K, 1281148 -> 1.3M, 23.456 -> 23.5, (523, whole=True) -> 523."""
     if val is None or pd.isna(val):
@@ -83,7 +77,6 @@ def service_of(hours: pd.Series, lunch: tuple[int, int], dinner_start: int) -> p
 
 # -------------------------------------------------------------------------
 # KPIs
-# -------------------------------------------------------------------------
 def valid_table(o: pd.DataFrame) -> pd.Series:
     """Orders served at a real table (table id missing, blank or 0 = counter/takeaway)."""
     raw = o["id_table"]
@@ -132,7 +125,6 @@ def change(cur, prev):
 
 # -------------------------------------------------------------------------
 # Overview
-# -------------------------------------------------------------------------
 def revenue_trend(o: pd.DataFrame, start: date, end: date) -> tuple[pd.DataFrame, str]:
     """Daily revenue (weekly for ranges over 92 days); days with no orders count as 0."""
     daily = o.groupby("date")["revenue"].sum()
@@ -165,7 +157,7 @@ def store_metrics(o_all: pd.DataFrame) -> pd.DataFrame:
 
 
 def benchmark(o_all_period: pd.DataFrame, store: str, stores: pd.DataFrame | None,
-              min_peers: int = 3, min_orders: int = 30):
+            min_peers: int = 3, min_orders: int = 30):
     """Your metrics vs the median of comparable restaurants (same postcode if possible)."""
     m = store_metrics(o_all_period)
     if store not in m.index:
@@ -188,7 +180,6 @@ def benchmark(o_all_period: pd.DataFrame, store: str, stores: pd.DataFrame | Non
 
 # -------------------------------------------------------------------------
 # Sales
-# -------------------------------------------------------------------------
 def hourly_profile(o: pd.DataFrame, hours: list[int]) -> pd.DataFrame:
     """Average orders and revenue per trading day, by hour of day."""
     days = o["date"].nunique() or 1
@@ -204,8 +195,8 @@ def weekday_hour(o: pd.DataFrame, hours: list[int]) -> pd.DataFrame:
     """Average orders for each weekday x hour (rows Mon..Sun, columns in opening order)."""
     days_per_weekday = o.groupby("weekday")["date"].nunique().reindex(range(7))
     counts = (o.groupby(["weekday", "hour"])["id_order"].nunique()
-               .unstack(fill_value=0)
-               .reindex(index=range(7), columns=hours, fill_value=0))
+            .unstack(fill_value=0)
+            .reindex(index=range(7), columns=hours, fill_value=0))
     avg = counts.div(days_per_weekday, axis=0)  # NaN where that weekday never traded
     avg.index = WEEKDAYS
     avg.columns = [hour_label(h) for h in hours]
@@ -230,7 +221,7 @@ def service_split(o: pd.DataFrame, lunch: tuple[int, int], dinner_start: int) ->
 def weekday_weekend(o: pd.DataFrame) -> pd.DataFrame:
     s = o.assign(group=o["weekday"].map(lambda d: "Weekend" if d >= 5 else "Weekdays"))
     g = s.groupby("group").agg(revenue=("revenue", "sum"), orders=("id_order", "nunique"),
-                               days=("date", "nunique"))
+                            days=("date", "nunique"))
     g = g.reindex(["Weekdays", "Weekend"]).dropna()
     return pd.DataFrame({
         "group": g.index,
@@ -243,7 +234,6 @@ def weekday_weekend(o: pd.DataFrame) -> pd.DataFrame:
 
 # -------------------------------------------------------------------------
 # Menu
-# -------------------------------------------------------------------------
 def menu_items(products: pd.DataFrame, exclude_terms: list[str]) -> pd.DataFrame:
     """Sellable products only: no discounts, deposits, delivery fees etc."""
     p = products
@@ -252,7 +242,7 @@ def menu_items(products: pd.DataFrame, exclude_terms: list[str]) -> pd.DataFrame
     terms = [t.strip().upper() for t in exclude_terms if t.strip()]
     if terms:
         pattern = "|".join(pd.Series(terms).str.replace(r"([\\^$.|?*+()\[\]{}])", r"\\\1",
-                                                         regex=True))
+                                                        regex=True))
         name = p["dim_name_translated"].astype(str).str.upper()
         cat = p["dim_category_translated"].astype(str).str.upper()
         p = p[~name.str.contains(pattern) & ~cat.str.contains(pattern)]
@@ -261,10 +251,10 @@ def menu_items(products: pd.DataFrame, exclude_terms: list[str]) -> pd.DataFrame
 
 def item_totals(p: pd.DataFrame) -> pd.DataFrame:
     g = (p.groupby(["dim_name_translated", "dim_category_translated"], observed=True)
-          .agg(units=("m_quantity", "sum"), revenue=("m_total_price_inc_vat", "sum"))
-          .reset_index()
-          .rename(columns={"dim_name_translated": "item",
-                           "dim_category_translated": "category"}))
+        .agg(units=("m_quantity", "sum"), revenue=("m_total_price_inc_vat", "sum"))
+        .reset_index()
+        .rename(columns={"dim_name_translated": "item",
+                        "dim_category_translated": "category"}))
     g = g[g["units"] > 0]
     g["item"] = g["item"].astype(str)
     g["category"] = g["category"].astype(str)
@@ -273,7 +263,7 @@ def item_totals(p: pd.DataFrame) -> pd.DataFrame:
 
 def categories_by_revenue(items: pd.DataFrame) -> list[str]:
     return (items.groupby("category")["revenue"].sum()
-                 .sort_values(ascending=False).index.tolist())
+                .sort_values(ascending=False).index.tolist())
 
 
 def top_items(items: pd.DataFrame, by: str, n: int = 5) -> pd.DataFrame:
@@ -305,8 +295,7 @@ def menu_matrix(items: pd.DataFrame) -> tuple[pd.DataFrame, float, float]:
 
 # -------------------------------------------------------------------------
 # Service
-# -------------------------------------------------------------------------
-PARTY_SIZES = ["1", "2", "3", "4", "5–6", "7+"]
+PARTY_SIZES = ["1", "2", "3", "4", "5-6", "7+"]
 
 
 def party_sizes(o: pd.DataFrame) -> pd.DataFrame:
@@ -327,7 +316,6 @@ def party_sizes(o: pd.DataFrame) -> pd.DataFrame:
 
 # -------------------------------------------------------------------------
 # Payments
-# -------------------------------------------------------------------------
 def payment_split(pay: pd.DataFrame, top: int = 4) -> pd.DataFrame:
     g = (pay.groupby("dim_type", observed=True)
             .agg(amount=("m_amount", "sum"), payments=("m_amount", "size"))
