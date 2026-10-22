@@ -268,7 +268,7 @@ with tab_overview:
             hovermode="x"), key="trend")
     download(trend.rename(columns={"period": grain}), "revenue_trend")
 
-    st.markdown("##### How you compare")
+    st.markdown("##### How you compare with peers in this area")
     bench = an.benchmark(an.in_period(orders_all, start, end), store, stores)
     if bench is None:
         st.caption("Benchmarks need at least 3 other restaurants with orders on the same dates.")
@@ -455,7 +455,7 @@ with tab_payments:
                         [f"{fmt(c, whole=True)} payments · {fmt_pct(s)}" for c, s in
                         zip(split["payments"], split["payment_share"])],
                         "Number of payments", COUNT, hover), key="pay_count")
-            st.caption("Cancelled, void, refunded and failed payments are left out.")
+            st.caption("Cancelled, refunded and failed payments are not calculated.")
             download(split, "payment_methods")
 
 # -------------------------------------------------------------------------
@@ -465,4 +465,4 @@ st.caption(
     f"**Data:** {source_label} · **Showing:** {store_label(store)}, "
     f"{start:%d %b %Y} - {end:%d %b %Y} · **Data available to:** {last_day:%d %b %Y}  \n"
     "**How figures are calculated:** revenue is the amount paid on each order, incl. VAT. "
-    "A trading day runs 05:00 to 05:00")
+    "A trading day runs 05:00 to 05:00.")
