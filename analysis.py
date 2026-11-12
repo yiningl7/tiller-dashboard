@@ -94,6 +94,13 @@ def dwell_minutes(o: pd.DataFrame) -> pd.Series:
     return d[(d > 0) & (d <= MAX_DWELL_MIN)]
 
 
+def guests_recorded(o: pd.DataFrame) -> bool:
+    """False when guest numbers are just a default (e.g. a bar where every bill shows 1)."""
+    g = o["m_nb_customer"]
+    seated = g[g > 0]
+    return len(seated) > 0 and (seated > 1).mean() >= 0.02
+
+
 def kpis(o: pd.DataFrame, n_tables: int | None) -> dict:
     revenue = o["revenue"].sum()
     orders = o["id_order"].nunique()
@@ -106,7 +113,8 @@ def kpis(o: pd.DataFrame, n_tables: int | None) -> dict:
         "revenue": revenue,
         "orders": orders,
         "avg_ticket": revenue / orders if orders else None,
-        "spend_per_cover": seated["revenue"].sum() / covers if covers else None,
+        "spend_per_cover": (seated["revenue"].sum() / covers
+                            if covers and guests_recorded(o) else None),
         "dwell": dwell.mean() if not dwell.empty else None,
         # Orders served at a table, per table, per day the restaurant traded.
         # Dividing by ALL tables (not only the ones used that day) avoids overstating it.
@@ -124,58 +132,149 @@ def change(cur, prev):
 
 
 # -------------------------------------------------------------------------
-# Overview
-def revenue_trend(o: pd.DataFrame, start: date, end: date) -> tuple[pd.DataFrame, str]:
-    """Daily revenue (weekly for ranges over 92 days); days with no orders count as 0."""
-    daily = o.groupby("date")["revenue"].sum()
-    daily = daily.reindex(pd.date_range(start, end, freq="D"), fill_value=0.0)
+# Overview: daily view, holidays, peaks, week on week
+PEAK_RATIO = 1.5      # a day at 1.5x a normal same weekday counts as a peak
+TYPICAL_WINDOW = 28   # "normal" = median of the same weekday within 4 weeks either side
+
+
+def easter_sunday(year: int) -> date:
+    """Anonymous Gregorian algorithm."""
+    a, b, c = year % 19, year // 100, year % 100
+    d, e = b // 4, b % 4
+    g = (8 * b + 13) // 25
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = c // 4, c % 4
+    l_ = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l_) // 451
+    month = (h + l_ - 7 * m + 114) // 31
+    day = (h + l_ - 7 * m + 114) % 31 + 1
+    return date(year, month, day)
+
+
+def special_days(years) -> dict:
+    """French public holidays plus the dates that change how people eat and drink out."""
+    out = {}
+    for y in years:
+        easter = easter_sunday(y)
+        out.update({
+            date(y, 1, 1): "New Year's Day",
+            date(y, 2, 14): "Valentine's Day",
+            easter + timedelta(days=1): "Easter Monday",
+            date(y, 5, 1): "May Day",
+            date(y, 5, 8): "Victory in Europe Day",
+            easter + timedelta(days=39): "Ascension Day",
+            easter + timedelta(days=50): "Whit Monday",
+            date(y, 6, 21): "F\u00eate de la Musique",
+            date(y, 7, 14): "Bastille Day",
+            date(y, 8, 15): "Assumption Day",
+            date(y, 11, 1): "All Saints' Day",
+            date(y, 11, 11): "Armistice Day",
+            date(y, 12, 24): "Christmas Eve",
+            date(y, 12, 25): "Christmas Day",
+            date(y, 12, 31): "New Year's Eve",
+        })
+    return out
+
+
+def _typical(values: pd.Series, window: int = TYPICAL_WINDOW) -> pd.Series:
+    """For each day, the median of the same weekday within `window` days either side,
+    leaving the day itself out. NaN when fewer than 2 such days traded."""
+    out = pd.Series(float("nan"), index=values.index)
+    for wd in range(7):
+        s = values[values.index.dayofweek == wd]
+        if s.empty:
+            continue
+        days = s.index.values.astype("datetime64[D]").astype("int64")
+        vals = s.values
+        lo = days.searchsorted(days - window, side="left")
+        hi = days.searchsorted(days + window, side="right")
+        typ = []
+        for i, (a, b) in enumerate(zip(lo, hi)):
+            near = [vals[j] for j in range(a, b) if j != i]
+            typ.append(float(pd.Series(near).median()) if len(near) >= 2 else float("nan"))
+        out.loc[s.index] = typ
+    return out
+
+
+def daily_profile(o_store: pd.DataFrame) -> pd.DataFrame:
+    """One row per trading day of a restaurant: revenue, orders, orders in the busiest hour,
+    and how the day compares with a normal same weekday. Closed days have no row."""
+    days = o_store.groupby("date").agg(revenue=("revenue", "sum"),
+                                       orders=("id_order", "nunique"))
+    days = days[days["orders"] > 0]
+    peak_hour = o_store.groupby(["date", "hour"])["id_order"].nunique()
+    days["busiest_hour_orders"] = peak_hour.groupby(level=0).max().reindex(days.index)
+    days["typical_revenue"] = _typical(days["revenue"])
+    days["typical_busiest_hour"] = _typical(days["busiest_hour_orders"].astype(float))
+    days["vs_typical"] = days["revenue"] / days["typical_revenue"]
+    names = special_days(sorted(set(days.index.year)))
+    days["special"] = [names.get(d.date()) for d in days.index]
+    return days
+
+
+def revenue_trend(days: pd.DataFrame, start: date, end: date) -> tuple[pd.DataFrame, str]:
+    """Revenue per trading day (weekly for ranges over 92 days). Closed days are left out
+    rather than drawn as zero; a week with no trading at all is a gap."""
+    d = in_period(days.rename_axis("date").reset_index(), start, end)
     if (end - start).days + 1 > 92:
-        weekly = daily.resample("W-MON", label="left", closed="left").sum()
-        return weekly.rename_axis("period").reset_index(name="revenue"), "week"
-    return daily.rename_axis("period").reset_index(name="revenue"), "day"
+        s = d.set_index("date")["revenue"]
+        weekly = s.resample("W-MON", label="left", closed="left").agg(["sum", "count"])
+        weekly = weekly.reindex(pd.date_range(pd.Timestamp(start) - pd.Timedelta(
+            days=pd.Timestamp(start).dayofweek), end, freq="W-MON"))
+        rev = weekly["sum"].where(weekly["count"] > 0)
+        out = pd.DataFrame({"period": weekly.index, "revenue": rev.values,
+                            "trading_days": weekly["count"].fillna(0).astype(int).values})
+        return out, "week"
+    out = d.rename(columns={"date": "period"})[
+        ["period", "revenue", "orders", "typical_revenue", "vs_typical", "special"]]
+    return out.reset_index(drop=True), "day"
 
 
-def store_metrics(o_all: pd.DataFrame) -> pd.DataFrame:
-    """Benchmark metrics for every restaurant over the same dates."""
-    o = o_all.assign(
-        covers=o_all["m_nb_customer"].where(o_all["m_nb_customer"] > 0, 0),
-        seated_rev=o_all["revenue"].where(o_all["m_nb_customer"] > 0, 0),
-        dwell=(o_all["date_closed"] - o_all["date_opened"]).dt.total_seconds() / 60,
-    )
-    o["dwell"] = o["dwell"].where((o["dwell"] > 0) & (o["dwell"] <= MAX_DWELL_MIN))
-    g = o.groupby("id_store", observed=True).agg(
-        revenue=("revenue", "sum"), orders=("id_order", "nunique"),
-        days=("date", "nunique"), covers=("covers", "sum"),
-        seated_rev=("seated_rev", "sum"), dwell=("dwell", "mean"))
-    return pd.DataFrame({
-        "orders": g["orders"],
-        "avg_ticket": g["revenue"] / g["orders"],
-        "spend_per_cover": (g["seated_rev"] / g["covers"]).where(g["covers"] > 0),
-        "revenue_per_day": g["revenue"] / g["days"],
-        "dwell": g["dwell"],
-    })
+def peak_days(days: pd.DataFrame, start: date, end: date, ratio: float = PEAK_RATIO) -> pd.DataFrame:
+    """Holidays and unusually busy days in the period, with what they meant for staffing."""
+    d = in_period(days.rename_axis("date").reset_index(), start, end)
+    keep = d["special"].notna() | (d["vs_typical"] >= ratio)
+    d = d[keep].copy()
+    d["label"] = d["special"].fillna("Unusual peak")
+    d["extra_busiest_hour"] = d["busiest_hour_orders"] / d["typical_busiest_hour"] - 1
+    return d.sort_values("date").reset_index(drop=True)[
+        ["date", "label", "revenue", "typical_revenue", "vs_typical", "orders",
+         "busiest_hour_orders", "typical_busiest_hour", "extra_busiest_hour"]]
 
 
-def benchmark(o_all_period: pd.DataFrame, store: str, stores: pd.DataFrame | None,
-            min_peers: int = 3, min_orders: int = 30):
-    """Your metrics vs the median of comparable restaurants (same postcode if possible)."""
-    m = store_metrics(o_all_period)
-    if store not in m.index:
-        return None
-    others = m[(m.index != store) & (m["orders"] >= min_orders)]
+def week_on_week(days: pd.DataFrame, end: date) -> pd.DataFrame:
+    """Each weekday of the last 7 days to `end` against the same weekday a week before."""
+    end_ts = pd.Timestamp(end)
+    rows = []
+    for back in range(6, -1, -1):
+        this_day = end_ts - pd.Timedelta(days=back)
+        last_week = this_day - pd.Timedelta(days=7)
+        cur = days["revenue"].get(this_day)
+        prev = days["revenue"].get(last_week)
+        if cur is None and prev is None:
+            continue  # closed both weeks: not a trading day
+        rows.append({"weekday": WEEKDAYS[this_day.dayofweek], "date": this_day,
+                     "revenue": cur, "previous_date": last_week, "previous_revenue": prev,
+                     "change": change(cur, prev), "special": days["special"].get(this_day)})
+    return pd.DataFrame(rows, columns=["weekday", "date", "revenue", "previous_date",
+                                       "previous_revenue", "change", "special"])
 
-    group = "other restaurants in the data"
-    if stores is not None and stores["zipcode"].notna().any():
-        zips = stores.set_index("id_store")["zipcode"]
-        my_zip = zips.get(store)
-        if isinstance(my_zip, str):
-            local = others[others.index.map(zips.get) == my_zip]
-            if len(local) >= min_peers:
-                others, group = local, f"other restaurants in {my_zip}"
-    if len(others) < min_peers:
-        return None
-    return {"you": m.loc[store], "peers": others.median(numeric_only=True),
-            "n_peers": len(others), "group": group}
+
+def weekday_over_weeks(days: pd.DataFrame, start: date, end: date, weekday: int) -> pd.DataFrame:
+    """One weekday (Mon = 0) across every week of the period, with the change on the week before."""
+    d = in_period(days.rename_axis("date").reset_index(), start, end)
+    all_days = pd.date_range(start, end, freq="D")
+    wanted = all_days[all_days.dayofweek == weekday]
+    s = d.set_index("date")["revenue"].reindex(wanted)
+    out = pd.DataFrame({"date": wanted, "revenue": s.values})
+    out["change"] = out["revenue"] / out["revenue"].shift(1) - 1
+    out["special"] = [days["special"].get(x) for x in wanted]
+    return out
+
+
+def trading_weekdays(days: pd.DataFrame, start: date, end: date) -> list[int]:
+    d = in_period(days.rename_axis("date").reset_index(), start, end)
+    return sorted(set(d["date"].dt.dayofweek))
 
 
 # -------------------------------------------------------------------------
@@ -266,7 +365,7 @@ def categories_by_revenue(items: pd.DataFrame) -> list[str]:
                 .sort_values(ascending=False).index.tolist())
 
 
-def top_items(items: pd.DataFrame, by: str, n: int = 5) -> pd.DataFrame:
+def top_items(items: pd.DataFrame, by: str, n: int = 15) -> pd.DataFrame:
     total = items[by].sum()
     top = items.nlargest(n, by).copy()
     top["share"] = top[by] / total if total else 0

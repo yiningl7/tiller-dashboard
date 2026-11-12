@@ -14,9 +14,9 @@ Pick a restaurant and a date range in the sidebar. Everything on the page follow
 
 | Tab | What it shows |
 |---|---|
-| **Overview** | Revenue, orders, average ticket, spend per guest, dwell time and table turnover, with % change vs the previous period of the same length. Daily revenue trend (weekly for long ranges). How the restaurant compares with the median of similar restaurants. |
-| **Sales** | Average orders or revenue per day by hour. Weekday × hour heatmap for staff planning. Lunch vs dinner and weekdays vs weekends. |
-| **Menu** | Top 5 items by units and by revenue, each ranked on its own, filterable by category. Menu engineering matrix (Stars, Plowhorses, Puzzles, Dogs). |
+| **Overview** | Revenue, orders, average ticket, spend per guest, dwell time and table turnover, with % change vs the previous period of the same length. Revenue per trading day, with closed days left out and holidays and peak days highlighted (weekly for long ranges). Week on week: each of the last 7 days against the same weekday the week before, and any weekday across the period. |
+| **Sales** | Average orders or revenue per day by hour. Peak days and staffing: holidays and unusually busy days, how much busier their busiest hour was than normal. Lunch vs dinner and weekdays vs weekends. |
+| **Menu** | Top 15 items by units and by revenue, each ranked on its own, filterable by category, plus a sortable, searchable list of every item. |
 | **Service** | Party-size mix and average dwell time by party size, for floor planning. |
 | **Payments** | How guests pay, by amount and by number of payments, with average payment size. |
 
@@ -39,7 +39,8 @@ Also:
 - **Averages per day** divide by the days the restaurant actually traded in the period.
 - **Table turnover** is orders served at a table ÷ (number of tables × trading days). The table count starts at the number of tables seen in the data and can be changed in Restaurant settings.
 - **% change** is only shown when a full previous period of the same length exists in the data.
-- **Benchmarks** use the median of at least 3 other restaurants with 30+ orders on the same dates: restaurants in the same postcode when there are enough of them, otherwise all other restaurants. Peers are anonymised.
+- **Closed days** (no orders) are left out of the daily chart and of every per-day average, rather than counted as zero.
+- **A normal day** is the middle value (median) of the same weekday over the 4 weeks either side. A **peak day** takes at least 1.5 times that. Holidays are French public holidays plus Valentine's Day, Fête de la Musique, Christmas Eve and New Year's Eve.
 
 ### Cleaning choices
 
@@ -65,7 +66,7 @@ The raw CSVs (over 600 MB) are too large for GitHub and for Streamlit Community 
 - keeps only the columns the dashboard uses;
 - reduces order lines to **one row per restaurant, trading day and product**;
 - tags each payment with its restaurant and trading day, so payments follow the filters;
-- keeps each restaurant's postcode and currency for benchmarks and labels;
+- keeps each restaurant's postcode and currency for labels;
 - stores repeated text as categories and saves everything as compressed Parquet.
 
 The raw CSVs are not included in this repository.
@@ -120,7 +121,8 @@ python convert_to_parquet.py
 - Revenue trend vs the same period last year, with a sales forecast
 - Weekly email summary and alerts (e.g. "Revenue down 12% vs last Tuesday")
 - Log-in so each owner only sees their own restaurant
-- Item costs, to turn the menu engineering matrix from price into true profit
+- Item costs, to show profit as well as revenue
+- Weather, to show how sun and rain change sales
 
 ## Author
 
