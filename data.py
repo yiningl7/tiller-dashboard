@@ -4,6 +4,7 @@ Shared by the dashboard (app.py) and by convert_to_parquet.py, so bundled data,
 re-converted data and CSVs uploaded by a restaurant all go through the same rules.
 """
 
+import html
 from pathlib import Path
 
 import pandas as pd
@@ -114,6 +115,10 @@ def daily_products(lines: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
         keys = ["id_store"] + keys
     for c in ["m_quantity", "m_total_price_inc_vat"]:
         p[c] = pd.to_numeric(p[c], errors="coerce").fillna(0)
+    # Names come HTML-escaped from the till ("WINES &amp; CHAMPAGNES")
+    for c in ["dim_name_translated", "dim_category_translated"]:
+        text = p[c].astype(str)
+        p[c] = text.map({v: html.unescape(v) for v in text.unique()})
     for c in keys:
         if c != "order_date":
             p[c] = p[c].astype(str).astype("category")
@@ -136,7 +141,8 @@ def clean_payments(payments: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame
         pay = pay.drop(columns=[c for c in ["id_store", "date"] if c in pay])
         pay = pay.merge(orders[["id_order", "id_store", "date"]], on="id_order", how="inner")
     pay["id_store"] = pay["id_store"].astype(str).astype("category")
-    pay["dim_type"] = pay["dim_type"].astype(str).astype("category")
+    # "CB_Sans_Contact" and "CB_SANS_CONTACT" are the same method
+    pay["dim_type"] = pay["dim_type"].astype(str).str.strip().str.upper().astype("category")
     pay["date"] = to_local(pay["date"])
     keep = [c for c in ["id_pay", "id_order", "id_store", "date", "dim_type", "m_amount"]
             if c in pay]
@@ -171,6 +177,13 @@ def prepare(orders, lines=None, payments=None, stores=None) -> dict:
         "payments": clean_payments(payments, o) if payments is not None else None,
         "stores": clean_stores(stores) if stores is not None else None,
     }
+
+
+def data_version() -> tuple:
+    """Name, size and modified time of each data file. Changes whenever a file is
+    replaced, so the app knows to reload instead of reusing data held in memory."""
+    return tuple(sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns)
+                        for f in DATA_DIR.glob("*.parquet")))
 
 
 def load_bundled() -> dict:

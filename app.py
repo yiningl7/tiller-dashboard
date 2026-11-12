@@ -8,12 +8,13 @@ import streamlit as st
 import analysis as an
 from analysis import fmt, fmt_pct
 from data import (DEFAULT_EXCLUDED_ITEMS, REQUIRED_COLS, REVENUE_COLS, SINGLE_STORE_ID,
-                load_bundled, missing_columns, prepare)
+                data_version, load_bundled, missing_columns, prepare)
 
 st.set_page_config(page_title="Restaurant Insights", page_icon="🍽️", layout="wide")
 
 # Colours: orange = money, blue = counts, used the same way in every chart
 MONEY = "#eb6834"
+MONEY_LIGHT = "#f4b393"  # ordinary days, so holidays and peaks stand out
 COUNT = "#2a78d6"
 SEQUENTIAL = ["#eef5fd", "#b7d3f6", "#6da7ec", "#2a78d6", "#1c5cab", "#0d366b"]
 CLASS_COLORS = {"Star": "#2a78d6", "Plowhorse": "#eb6834", "Puzzle": "#1baf7a", "Dog": "#a3a19b"}
@@ -56,6 +57,11 @@ def hbar(names, values, labels, title, color, hover, height=300):
                 yaxis=dict(title=None, automargin=True))
 
 
+def bar_height(n):
+    """Room for n horizontal bars plus the title."""
+    return max(300, 26 * n + 70)
+
+
 def axis_ticks(max_value, prefix=""):
     """About 4 round tick values, labelled with the same formatter as the rest of the page."""
     if not max_value or max_value <= 0 or pd.isna(max_value):
@@ -75,9 +81,16 @@ def download(df, name, label="Download data (CSV)"):
 
 # -------------------------------------------------------------------------
 # Data
-@st.cache_resource(show_spinner="Loading data…")
-def bundled_data():
+@st.cache_resource(show_spinner="Loading data…", max_entries=1)
+def bundled_data(version):
+    """Loaded once and shared; reloaded automatically when the data files change."""
     return load_bundled()
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def store_days(store, data_key, _orders):
+    """One row per trading day for a restaurant (cached per restaurant and data set)."""
+    return an.daily_profile(_orders[_orders["id_store"] == store])
 
 
 @st.cache_data(show_spinner="Reading your files…", max_entries=2)
@@ -127,7 +140,7 @@ def upload_panel():
 
 data, source_label = upload_panel()
 if data is None:
-    data = bundled_data()
+    data = bundled_data(data_version())
 
 orders_all = data["orders"]
 products_all = data["products"]
@@ -191,6 +204,7 @@ if not tables_seen:  # no table numbers in the data
     n_tables = None
 hours = an.ordered_hours(open_h, close_h)
 money = lambda v: fmt(v, currency)  # noqa: E731
+data_key = (source_label, len(orders_all), round(float(orders_all["revenue"].sum()), 2))
 
 # -------------------------------------------------------------------------
 # Header and period checks
@@ -207,6 +221,10 @@ o = an.in_period(o_store, start, end)
 if o.empty:
     st.warning("No orders in this period. Select another date range.")
     st.stop()
+
+days = store_days(store, data_key, orders_all)
+day_name = lambda d: f"{d:%a %d %b %Y}"  # noqa: E731
+name_of = lambda x: x if isinstance(x, str) else ""  # noqa: E731  holiday name or blank
 
 prev_start, prev_end = an.previous_period(start, end)
 has_history = prev_start >= first_day
@@ -240,7 +258,9 @@ with tab_overview:
     st.markdown("##### Service")
     c4, c5, c6 = st.columns(3)
     metric(c4, "Spend per guest", money(cur["spend_per_cover"]), "spend_per_cover",
-        "Revenue per guest, on orders the number of guests was recorded")
+        "Revenue per guest, on orders where the number of guests was recorded"
+        if an.guests_recorded(o) else
+        "This restaurant doesn't record how many guests are on each bill.")
     metric(c5, "Average dwell time",
         f"{fmt(cur['dwell'])} min" if cur["dwell"] is not None else "-", "dwell",
         "Time from table opened to closed.",
@@ -253,44 +273,102 @@ with tab_overview:
     if not has_history:
         st.caption("No change shown: there isn't a full previous period of the same length before these dates.")
 
-    trend, grain = an.revenue_trend(o, start, end)
-    fig = go.Figure(go.Scatter(
-        x=trend["period"], y=trend["revenue"], mode="lines+markers" if len(trend) <= 45 else "lines",
-        line=dict(color=MONEY, width=2), marker=dict(size=7),
-        customdata=[money(v) for v in trend["revenue"]],
-        hovertemplate=("%{x|%a %d %b %Y}" if grain == "day" else "Week of %{x|%d %b %Y}")
-                    + "<br>%{customdata}<extra></extra>",
-    ))
-    show(style(fig, "Daily revenue" if grain == "day" else "Weekly revenue", 340,
-            xaxis=dict(title=None, showgrid=False),
-            yaxis=dict(title=None, gridcolor="rgba(128,128,128,0.15)", rangemode="tozero",
-                          **axis_ticks(trend["revenue"].max(), currency)),
-            hovermode="x"), key="trend")
+    trend, grain = an.revenue_trend(days, start, end)
+    if grain == "day":
+        special = trend["special"].notna() | (trend["vs_typical"] >= an.PEAK_RATIO)
+        # Label the biggest highlighted days only, so labels don't collide
+        labelled = set(trend[special].nlargest(4, "revenue").index)
+        vs_text = [f"{v:.1f}x a normal {d:%A}" if pd.notna(v) else "no normal day to compare"
+                   for v, d in zip(trend["vs_typical"], trend["period"])]
+        fig = go.Figure(go.Bar(
+            x=trend["period"], y=trend["revenue"],
+            marker_color=[MONEY if sp else MONEY_LIGHT for sp in special],
+            text=[(name_of(sp_name) or (f"{v:.1f}x" if pd.notna(v) else "")) if i in labelled
+                  else "" for i, (sp_name, v) in enumerate(zip(trend["special"],
+                                                              trend["vs_typical"]))],
+            textposition="outside", cliponaxis=False, textfont=dict(size=11),
+            customdata=[[day_name(d), money(r), vt, name_of(sp_name)] for d, r, vt, sp_name in
+                        zip(trend["period"], trend["revenue"], vs_text, trend["special"])],
+            hovertemplate="%{customdata[0]}<br>%{customdata[1]} · %{customdata[2]}"
+                          "<br>%{customdata[3]}<extra></extra>",
+        ))
+        avg = trend["revenue"].mean()
+        fig.add_hline(y=avg, line=dict(color="gray", width=1, dash="dot"),
+                      annotation_text=f"average {money(avg)}", annotation_position="top left",
+                      annotation_font=dict(size=11, color="gray"))
+        top = trend["revenue"].max()
+        show(style(fig, "Revenue per trading day", 360, bargap=0.2,
+                   xaxis=dict(title=None, showgrid=False),
+                   yaxis=dict(title=None, gridcolor="rgba(128,128,128,0.15)",
+                              range=[0, top * 1.18], **axis_ticks(top, currency))), key="trend")
+        closed = (end - start).days + 1 - len(trend)
+        st.caption(
+            (f"Closed days are left out ({closed} in this period). " if closed else "")
+            + "Dark bars are holidays and peak days, at 1.5x or more a normal same weekday. "
+              "A normal day is the middle value of that weekday over the 4 weeks either side.")
+    else:
+        fig = go.Figure(go.Scatter(
+            x=trend["period"], y=trend["revenue"], mode="lines",
+            line=dict(color=MONEY, width=2), connectgaps=False,
+            customdata=[[money(r), int(n)] for r, n in zip(trend["revenue"], trend["trading_days"])],
+            hovertemplate="Week of %{x|%d %b %Y}<br>%{customdata[0]} · "
+                          "%{customdata[1]} trading days<extra></extra>",
+        ))
+        show(style(fig, "Weekly revenue", 340,
+                   xaxis=dict(title=None, showgrid=False),
+                   yaxis=dict(title=None, gridcolor="rgba(128,128,128,0.15)", rangemode="tozero",
+                              **axis_ticks(trend["revenue"].max(), currency)),
+                   hovermode="x"), key="trend")
+        st.caption("Weeks when the restaurant didn't trade at all are shown as gaps.")
     download(trend.rename(columns={"period": grain}), "revenue_trend")
 
-    st.markdown("##### How you compare with peers in this area")
-    bench = an.benchmark(an.in_period(orders_all, start, end), store, stores)
-    if bench is None:
-        st.caption("Benchmarks need at least 3 other restaurants with orders on the same dates.")
+    st.markdown("##### Week on week")
+    wow = an.week_on_week(days, end)
+    if wow["revenue"].notna().sum() == 0:
+        st.caption("No trading in the last 7 days of this period.")
     else:
-        you, peers = bench["you"], bench["peers"]
+        st.caption(f"Each day of the last 7 days to {end:%a %d %b} against the same day "
+                   "the week before.")
+        cols = st.columns(len(wow))
+        for col, r in zip(cols, wow.itertuples()):
+            col.metric(
+                f"{r.date:%a %d %b}",
+                money(r.revenue) if pd.notna(r.revenue) else "Closed",
+                (f"{fmt_pct(r.change, signed=True)} vs {r.previous_date:%d %b}"
+                 if r.change is not None and pd.notna(r.change) else None),
+                help=(f"{name_of(r.special)}. " if name_of(r.special) else "")
+                     + (f"{r.previous_date:%a %d %b}: {money(r.previous_revenue)}"
+                        if pd.notna(r.previous_revenue) else
+                        f"Closed on {r.previous_date:%a %d %b}"),
+                border=True)
 
-        def vs(key):
-            c = an.change(you[key], peers[key])
-            return None if c is None or pd.isna(c) else f"{fmt_pct(c, signed=True)} vs peers"
-
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("Average ticket", money(you["avg_ticket"]), vs("avg_ticket"),
-                help=f"Peer median: {money(peers['avg_ticket'])}", border=True)
-        b2.metric("Spend per guest", money(you["spend_per_cover"]), vs("spend_per_cover"),
-                help=f"Peer median: {money(peers['spend_per_cover'])}", border=True)
-        b3.metric("Revenue per trading day", money(you["revenue_per_day"]),
-                vs("revenue_per_day"),
-                help=f"Peer median: {money(peers['revenue_per_day'])}", border=True)
-        b4.metric("Average dwell time", f"{fmt(you['dwell'])} min", vs("dwell"),
-                delta_color="off",
-                help=f"Peer median: {fmt(peers['dwell'])} min", border=True)
-        st.caption(f"Compared with the median of {bench['n_peers']} {bench['group']} on the same dates. Hover a figure to see the peer median.")
+        open_days = an.trading_weekdays(days, start, end)
+        in_range = an.in_period(days.rename_axis("date").reset_index(), start, end)
+        avg_by_wd = in_range.groupby(in_range["date"].dt.dayofweek)["revenue"].mean()
+        busiest = int(avg_by_wd.idxmax()) if len(avg_by_wd) else open_days[0]
+        picked = st.segmented_control(
+            "Weekday", [an.WEEKDAYS[w] for w in open_days], default=an.WEEKDAYS[busiest],
+            required=True, key=f"wow_day_{store}")
+        wd = an.WEEKDAYS.index(picked)
+        series = an.weekday_over_weeks(days, start, end, wd)
+        fig = go.Figure(go.Bar(
+            x=[f"{d:%d %b}" for d in series["date"]], y=series["revenue"],
+            marker_color=[MONEY if name_of(sp) else MONEY_LIGHT for sp in series["special"]],
+            text=[fmt_pct(c, signed=True) if pd.notna(c) else "" for c in series["change"]],
+            textposition="outside", cliponaxis=False,
+            customdata=[[day_name(d), money(r) if pd.notna(r) else "Closed", name_of(sp)]
+                        for d, r, sp in zip(series["date"], series["revenue"], series["special"])],
+            hovertemplate="%{customdata[0]}<br>%{customdata[1]}<br>%{customdata[2]}"
+                          "<extra></extra>",
+        ))
+        top = series["revenue"].max()
+        show(style(fig, f"Every {an.WEEKDAYS[wd]} in this period, with the change on the week before",
+                   320, bargap=0.35,
+                   xaxis=dict(title=None, type="category"),
+                   yaxis=dict(title=None, gridcolor="rgba(128,128,128,0.15)",
+                              range=[0, (top if pd.notna(top) else 1) * 1.2],
+                              **axis_ticks(top, currency))), key="wow_chart")
+        download(series, f"week_on_week_{an.WEEKDAYS[wd].lower()}")
 
 # -------------------------------------------------------------------------
 # Sales
@@ -314,6 +392,40 @@ with tab_sales:
                           **(axis_ticks(hourly[col].max(), currency) if is_rev else {}))),
         key="hourly")
     download(hourly.drop(columns="label"), "hourly_average")
+
+    st.subheader("Peak days and staffing")
+    peaks = an.peak_days(days, start, end)
+    if peaks.empty:
+        st.caption("No holidays or unusually busy days in this period.")
+    else:
+        busy = peaks[peaks["vs_typical"] >= an.PEAK_RATIO]
+        if not busy.empty and busy["extra_busiest_hour"].notna().any():
+            extra = busy["extra_busiest_hour"].median()
+            st.markdown(
+                f"**{len(busy)} day{'s' if len(busy) > 1 else ''} in this period ran at "
+                f"{an.PEAK_RATIO:g}x a normal day or more.** At their busiest hour they "
+                f"typically had {fmt_pct(extra)} more orders than normal: plan extra staff "
+                "for that hour, not just more for the whole day.")
+        table = pd.DataFrame({
+            "Date": [day_name(d) for d in peaks["date"]],
+            "What": peaks["label"],
+            "Revenue": peaks["revenue"],
+            "vs a normal day": peaks["vs_typical"],
+            "Busiest hour (orders)": peaks["busiest_hour_orders"],
+            "Normal busiest hour": peaks["typical_busiest_hour"],
+            "Extra at busiest hour": peaks["extra_busiest_hour"] * 100,
+        })
+        st.dataframe(table, hide_index=True, width="stretch", column_config={
+            "Revenue": st.column_config.NumberColumn(format=f"{currency}%.0f"),
+            "vs a normal day": st.column_config.NumberColumn(format="%.1fx"),
+            "Busiest hour (orders)": st.column_config.NumberColumn(format="%.0f"),
+            "Normal busiest hour": st.column_config.NumberColumn(format="%.0f"),
+            "Extra at busiest hour": st.column_config.NumberColumn(format="%+.0f%%"),
+        })
+        st.caption("Holidays are listed even when they were quiet, so you can see which ones "
+                   "are worth staffing up for. A normal day is the middle value of the same "
+                   "weekday over the 4 weeks either side. Closed days don't appear.")
+        download(peaks, "peak_days")
 
     st.subheader("Lunch vs dinner, weekdays vs weekends")
     split = an.service_split(o, lunch, dinner_start)
@@ -365,7 +477,7 @@ with tab_menu:
             items = items_all if category == "All categories" else \
                 items_all[items_all["category"] == category]
 
-            st.subheader("Top 5 items")
+            st.subheader(f"Top {min(15, len(items))} items")
             by_units = an.top_items(items, "units")
             by_rev = an.top_items(items, "revenue")
             hover = lambda t: [  # noqa: E731
@@ -378,24 +490,46 @@ with tab_menu:
                 show(hbar(by_units["item"], by_units["units"],
                         [f"{fmt(u, whole=True)} · {fmt_pct(s)}" for u, s in
                         zip(by_units["units"], by_units["share"])],
-                        "By units sold", COUNT, hover(by_units)), key="top_units")
+                        "By units sold", COUNT, hover(by_units),
+                        height=bar_height(len(by_units))), key="top_units")
             with right:
                 show(hbar(by_rev["item"], by_rev["revenue"],
                         [f"{money(r)} · {fmt_pct(s)}" for r, s in
                         zip(by_rev["revenue"], by_rev["share"])],
-                        "By revenue", MONEY, hover(by_rev)), key="top_revenue")
+                        "By revenue", MONEY, hover(by_rev),
+                        height=bar_height(len(by_rev))), key="top_revenue")
             st.caption("Each chart is ranked on its own. Percentages are shares of "
                     f"{'all items' if category == 'All categories' else category} sold. "
                     "Item revenue comes from order lines incl. VAT)")
             download(pd.concat([by_units.assign(ranked_by="units"),
                                 by_rev.assign(ranked_by="revenue")]), "top_items")
 
+            with st.expander(f"All {len(items)} items"):
+                full = items.sort_values("revenue", ascending=False).reset_index(drop=True)
+                st.dataframe(pd.DataFrame({
+                    "Rank": range(1, len(full) + 1),
+                    "Item": full["item"], "Category": full["category"],
+                    "Units sold": full["units"], "Revenue": full["revenue"],
+                    "Average price": full["revenue"] / full["units"],
+                    "Share of revenue": full["revenue"] / full["revenue"].sum() * 100,
+                }), hide_index=True, width="stretch", height=420, column_config={
+                    "Units sold": st.column_config.NumberColumn(format="%.0f"),
+                    "Revenue": st.column_config.NumberColumn(format=f"{currency}%.0f"),
+                    "Average price": st.column_config.NumberColumn(format=f"{currency}%.2f"),
+                    "Share of revenue": st.column_config.NumberColumn(format="%.1f%%"),
+                })
+                st.caption("Ranked by revenue. Click a column name to sort; use the search "
+                           "icon above the table to find an item.")
+
 # -------------------------------------------------------------------------
 # Service
 with tab_service:
     st.subheader("Party sizes")
     parties = an.party_sizes(o)
-    if parties["orders"].sum() == 0:
+    if not an.guests_recorded(o):
+        st.info("This restaurant doesn't record how many guests are on each bill, "
+                "so party sizes can't be shown.")
+    elif parties["orders"].sum() == 0:
         st.info("No guest counts recorded in this period.")
     else:
         left, right = st.columns(2)
